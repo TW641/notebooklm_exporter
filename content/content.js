@@ -31,6 +31,177 @@
       ASSISTANT_MESSAGE: ['.to-user-container', '[class*="to-user"]', '.assistant-message', '[data-role="assistant"]']
     }
   };
+  
+  // ============================================================================
+  // [NotebookLM Ultra Exporter] 專屬 Markdown 轉換引擎 (100% 嚴格完整版)
+  // ============================================================================
+
+  /**
+   * 1. 合併相鄰的格式化標籤 (b, strong, i, em)，並避開 class="code"
+   */
+  function mergeAdjacentFormattingTags(rootElement) {
+    const isTextOrComment = node => node.nodeType === Node.COMMENT_NODE || (node.nodeType === Node.TEXT_NODE && !node.textContent?.trim());
+    const mergeTags = (filterFn) => {
+      const elements = Array.from(rootElement.querySelectorAll("b, strong, i, em")).filter(filterFn);
+      elements.forEach(el => {
+        if (!el.parentNode) return;
+        let next = el.nextSibling;
+        while (next && isTextOrComment(next)) {
+          let toRemove = next; next = next.nextSibling; toRemove.parentNode?.removeChild(toRemove);
+        }
+        while (next && filterFn(next)) {
+          let adjacentEl = next;
+          while (adjacentEl.firstChild) el.appendChild(adjacentEl.firstChild);
+          next = adjacentEl.nextSibling; adjacentEl.parentNode?.removeChild(adjacentEl);
+          while (next && isTextOrComment(next)) {
+            let toRemove = next; next = next.nextSibling; toRemove.parentNode?.removeChild(toRemove);
+          }
+        }
+      });
+    };
+    mergeTags(el => el.nodeType === Node.ELEMENT_NODE && ["B", "STRONG"].includes(el.tagName) && !el.classList?.contains("code"));
+    mergeTags(el => el.nodeType === Node.ELEMENT_NODE && ["I", "EM"].includes(el.tagName) && !el.classList?.contains("code"));
+  }
+
+  /**
+   * 2. 建立並設定 TurndownService (包含 100% 完整客製化規則)
+   */
+  function setupTurndown() {
+    const turndownService = new TurndownService({
+      headingStyle: 'atx',
+      codeBlockStyle: 'fenced',
+      bulletListMarker: '-',
+      emDelimiter: '*',
+      hr: '---'
+    });
+
+    // 關閉過度跳脫機制
+    turndownService.escape = function(string) { return string; };
+
+    // 規則 1：移除腳本與樣式
+    turndownService.addRule('removeScripts', {
+      filter: ['script', 'style', 'noscript'],
+      replacement: () => ''
+    });
+
+    // 規則 2：移除 Material Icons (避免污染文本)
+    turndownService.addRule("removeMatIcons", {
+      filter: node => node.nodeName === "MAT-ICON" || node.classList?.contains("mat-icon"),
+      replacement: () => ""
+    });
+
+    // 規則 3：處理引用標記 (將按鈕轉換為乾淨的 [1], [2])
+    turndownService.addRule("citationMarker", {
+      filter: node => node.classList?.contains("citation-marker"),
+      replacement: (content, node) => {
+        let span = node.querySelector("span[aria-label]");
+        if (!span) return "";
+        let label = span.getAttribute("aria-label");
+        if (!label || label.includes("顯示其他") || label.toLowerCase().includes("show more") || label.toLowerCase().includes("more citations") || label.trim() === "...") return "";
+        let match = label.match(/^(\d+):/);
+        return match ? `[${match[1]}]` : "";
+      }
+    });
+
+    // 規則 4：完美解析 Katex 數學公式
+    turndownService.addRule("mathElement", {
+      filter: node => node.nodeName === "SPAN" && node.hasAttribute("data-math"),
+      replacement: (content, node) => {
+        let mathStr = node.getAttribute("data-math");
+        let isBlock = node.getAttribute("data-math-block") === "true" || 
+                      (node.parentNode && node.parentNode.classList && node.parentNode.classList.contains("display-math"));
+        return isBlock ? `\n\n\\\\[${mathStr}\\\\]\n\n` : `\\\\(${mathStr}\\\\)`;
+      }
+    });
+
+    // 規則 5：支援 <i class="code"> 轉換為反引號
+    turndownService.addRule("inlineCode", {
+      filter: node => (node.nodeName === "CODE" && node.parentNode?.nodeName !== "PRE") || (node.getAttribute && node.getAttribute("class") && node.getAttribute("class").includes("code")),
+      replacement: content => {
+        let trimmed = content.trim();
+        return trimmed ? `\`${trimmed}\`` : "";
+      }
+    });
+
+    // 規則 6：自訂程式碼區塊 (Fenced Code Block)
+    turndownService.addRule("fencedCodeBlock", {
+      filter: "pre",
+      replacement: (content, node) => {
+        let text = (node.textContent || content || "").replace(/\n+$/, "");
+        return text.trim() ? `\n\`\`\`\n${text}\n\`\`\`\n\n` : "";
+      }
+    });
+
+    // 規則 7：自訂表格解析 (取代 turndown-plugin-gfm)
+    turndownService.addRule("notebookLMTable", {
+      filter: "table",
+      replacement: (content, node) => {
+        let rows = Array.from(node.querySelectorAll("tr"));
+        if (rows.length === 0) return "";
+        let md = "\n\n";
+        rows.forEach((row, i) => {
+          let cells = Array.from(row.querySelectorAll("td, th"));
+          let cellTexts = cells.map(cell => {
+            let text = (cell.textContent || "").trim().replace(/\|/g, "\\|").replace(/\n/g, " ");
+            return text || " ";
+          });
+          md += "| " + cellTexts.join(" | ") + " |\n";
+          if (i === 0) {
+            md += "| " + cellTexts.map(() => "---").join(" | ") + " |\n";
+          }
+        });
+        return md + "\n";
+      }
+    });
+
+    // 規則 8：支援 NotebookLM 的 heading1 ~ heading6
+    turndownService.addRule("notebookLMHeadings", {
+      filter: node => !!node.classList?.contains("paragraph") && (
+        node.classList.contains("heading1") || node.classList.contains("heading2") ||
+        node.classList.contains("heading3") || node.classList.contains("heading4") ||
+        node.classList.contains("heading5") || node.classList.contains("heading6")
+      ),
+      replacement: (content, node) => {
+        let trimmed = content.trim();
+        if (!trimmed) return "";
+        if (node.classList.contains("heading1")) return `\n# ${trimmed}\n\n`;
+        if (node.classList.contains("heading2")) return `\n## ${trimmed}\n\n`;
+        if (node.classList.contains("heading3")) return `\n### ${trimmed}\n\n`;
+        if (node.classList.contains("heading4")) return `\n#### ${trimmed}\n\n`;
+        if (node.classList.contains("heading5")) return `\n##### ${trimmed}\n\n`;
+        if (node.classList.contains("heading6")) return `\n###### ${trimmed}\n\n`;
+        return `\n${trimmed}\n\n`;
+      }
+    });
+
+    // 規則 9：支援 NotebookLM 的一般段落
+    turndownService.addRule("notebookLMParagraph", {
+      filter: node => {
+        let name = node.nodeName;
+        return !!node.classList?.contains("paragraph") && node.classList.contains("normal") &&
+               name !== "LI" && name !== "TD" && name !== "TH";
+      },
+      replacement: content => {
+        let trimmed = content.trim();
+        if (!trimmed) return "";
+        let unescaped = trimmed.replace(/\\/g, "");
+        return /^-{3,}$/.test(unescaped) ? "\n---\n\n" : `\n${trimmed}\n\n`;
+      }
+    });
+
+    return turndownService;
+  }
+
+  /**
+   * 3. Markdown 輸出後的最終修復
+   */
+  function postProcessMarkdown(mdString) {
+    return mdString
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/\*\*\s*\\\((.*?)\\\)\s*\*\*/g, " \\($1\\) ")
+      .replace(/\*\s*\\\((.*?)\\\)\s*\*/g, " \\($1\\) ");
+  }
+  // ============================================================================
 
   /**
    * Create Chat export button
@@ -516,17 +687,11 @@
    * Convert Studio item content to Markdown
    */
   function convertStudioItemToMarkdown(title, contentElement) {
-    const turndownService = new TurndownService({
-      headingStyle: 'atx',
-      codeBlockStyle: 'fenced',
-      bulletListMarker: '-',
-      emDelimiter: '_'
-    });
+    // 1. 呼叫我們集中寫好的設定函數 (取代原本重複的 new TurndownService)
+    const turndownService = setupTurndown();
 
-    turndownService.addRule('removeScripts', {
-      filter: ['script', 'style', 'noscript'],
-      replacement: () => ''
-    });
+    // 2. 在轉換前，先清理並合併 DOM 標籤
+    mergeAdjacentFormattingTags(contentElement);
 
     // Build markdown
     let markdown = '';
@@ -547,10 +712,8 @@
     const markdownContent = turndownService.turndown(htmlContent);
     markdown += markdownContent.trim() + '\n';
 
-    // Clean up excessive newlines
-    markdown = markdown.replace(/\n{3,}/g, '\n\n');
-
-    return markdown;
+    // Clean up excessive newlines and fix math bolding
+    return postProcessMarkdown(markdown);
   }
 
   /**
@@ -795,17 +958,8 @@
    * Convert chat messages to Markdown format
    */
   function convertToMarkdown(messages) {
-    const turndownService = new TurndownService({
-      headingStyle: 'atx',
-      codeBlockStyle: 'fenced',
-      bulletListMarker: '-',
-      emDelimiter: '_'
-    });
-
-    turndownService.addRule('removeScripts', {
-      filter: ['script', 'style', 'noscript'],
-      replacement: () => ''
-    });
+    // 1. 呼叫我們集中寫好的設定函數 (取代原本重複的 new TurndownService)
+    const turndownService = setupTurndown();
 
     let markdown = '';
 
@@ -824,6 +978,9 @@
       const role = msg.role === 'user' ? 'User' : 'Assistant';
       markdown += `## ${role}\n\n`;
 
+      // 2. 在轉換前，先清理並合併 DOM 標籤
+      mergeAdjacentFormattingTags(msg.content);
+
       const htmlContent = msg.content.innerHTML;
       const markdownContent = turndownService.turndown(htmlContent);
 
@@ -834,9 +991,8 @@
       }
     });
 
-    markdown = markdown.replace(/\n{3,}/g, '\n\n');
-
-    return markdown;
+    // Clean up excessive newlines and fix math bolding
+    return postProcessMarkdown(markdown);
   }
 
   /**
@@ -846,7 +1002,7 @@
     const date = new Date();
     const dateStr = date.toISOString().split('T')[0];
     const timeStr = date.toTimeString().split(' ')[0].replace(/:/g, '-');
-    return `notebooklm-chat-${dateStr}-${timeStr}.md`;
+    return `notebooklm-conversation-chat-${cleanTitle}-${dateStr}-${timeStr}.md`;
   }
 
   /**
