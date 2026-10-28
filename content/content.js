@@ -700,11 +700,12 @@
     const timestamp = new Date().toISOString();
     markdown += `---\n`;
     markdown += `exported: ${timestamp}\n`;
-    markdown += `source: NotebookLM Studio\n`;
-    markdown += `title: ${title}\n`;
+    markdown += `source: NotebookLM\n`;
+    markdown += `type: note\n`;
+    markdown += `title: "${title.replace(/"/g, '\\"')}"\n`;
     markdown += `---\n\n`;
     markdown += `# ${title}\n\n`;
-    markdown += `Exported: ${new Date().toLocaleString()}\n\n`;
+    markdown += `Exported at: ${new Date().toLocaleString()}\n\n`;
     markdown += `---\n\n`;
 
     // Convert content
@@ -958,19 +959,25 @@
    * Convert chat messages to Markdown format
    */
   function convertToMarkdown(messages) {
-    // 1. 呼叫我們集中寫好的設定函數 (取代原本重複的 new TurndownService)
+    // 1. 呼叫我們集中寫好的設定函數
     const turndownService = setupTurndown();
+
+    // 2. 動態取得目前筆記本名稱並組裝完整 Chat 標題
+    const notebookTitle = getNotebookTitle();
+    const chatTitle = `${notebookTitle} - Chat`;
 
     let markdown = '';
 
-    // Add frontmatter
+    // Add frontmatter (對齊先前工具的標準格式)
     const timestamp = new Date().toISOString();
     markdown += `---\n`;
     markdown += `exported: ${timestamp}\n`;
     markdown += `source: NotebookLM\n`;
+    markdown += `type: allChat\n`;
+    markdown += `title: "${chatTitle.replace(/"/g, '\\"')}"\n`;
     markdown += `---\n\n`;
-    markdown += `# NotebookLM Conversation\n\n`;
-    markdown += `Exported: ${new Date().toLocaleString()}\n\n`;
+    markdown += `# ${chatTitle}\n\n`;
+    markdown += `Exported at: ${new Date().toLocaleString()}\n\n`;
     markdown += `---\n\n`;
 
     // Convert each message
@@ -978,7 +985,7 @@
       const role = msg.role === 'user' ? 'User' : 'Assistant';
       markdown += `## ${role}\n\n`;
 
-      // 2. 在轉換前，先清理並合併 DOM 標籤
+      // 3. 在轉換前，先清理並合併 DOM 標籤
       mergeAdjacentFormattingTags(msg.content);
 
       const htmlContent = msg.content.innerHTML;
