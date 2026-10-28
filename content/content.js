@@ -996,13 +996,51 @@
   }
 
   /**
+   * 安全抓取目前 NotebookLM 筆記本的專案標題
+   */
+  function getNotebookTitle() {
+    // 優先策略 1：從您抓出的 editable-project-title 抓取文字標籤
+    const titleSpan = document.querySelector('editable-project-title .title-label-inner, .title-container .title-label-inner');
+    if (titleSpan && titleSpan.textContent?.trim()) {
+      return titleSpan.textContent.trim();
+    }
+
+    // 優先策略 2：如果使用者剛好在編輯標題，抓取 input 的值
+    const titleInput = document.querySelector('editable-project-title input.title-input');
+    if (titleInput && titleInput.value?.trim()) {
+      return titleInput.value.trim();
+    }
+
+    // 後備策略 3：如果 DOM 結構改變，退回使用 document.title 並濾除雜訊
+    const docTitle = document.title || '';
+    const cleanedDocTitle = docTitle.replace(/\s*-\s*(NotebookLM|Gemini Notebook|Google).*$/i, '').trim();
+    if (cleanedDocTitle) {
+      return cleanedDocTitle;
+    }
+
+    return 'Conversation';
+  }
+
+  /**
    * Generate filename for chat export
    */
   function generateChatFilename() {
+    // 1. 抓取原始筆記本標題
+    const rawTitle = getNotebookTitle();
+
+    // 2. 清理檔名（將斜線 \、／、空白等非法字元轉換為減號 -）
+    const cleanTitle = rawTitle
+      .toLowerCase()
+      .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-') // 移除非中英數的字元 (包含斜線)
+      .replace(/^-+|-+$/g, '')                 // 移除前後多餘的減號
+      .substring(0, 50);                       // 限制長度避免檔名過長
+
     const date = new Date();
     const dateStr = date.toISOString().split('T')[0];
     const timeStr = date.toTimeString().split(' ')[0].replace(/:/g, '-');
-    return `notebooklm-conversation-chat-${cleanTitle}-${dateStr}-${timeStr}.md`;
+    
+    // 3. 輸出包含筆記本標題的檔名
+    return `notebooklm-conversation-${cleanTitle || 'notebook'}-chat-${dateStr}-${timeStr}.md`;
   }
 
   /**
